@@ -50,9 +50,8 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
   static NumberFormat lambdaFormatter = new DecimalFormat(".##E0");
   static NumberFormat devFormatter = new DecimalFormat(".##");
 
-  public static final int SCORING_INTERVAL_MSEC = 15000; // scoreAndUpdateModel every minute unless socre every iteration is set
+  public static final int SCORING_INTERVAL_MSEC = 15000; // scoreAndUpdateModel every minute unless score every iteration is set
   public String _generatedWeights = null;
-
   public GLM(boolean startup_once){super(new GLMParameters(),startup_once);}
   public GLM(GLMModel.GLMParameters parms) {
     super(parms);
@@ -643,36 +642,71 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       return xy;
     }
 
-    private void fitIRLSM_multinomial(Solver s){
-      assert _dinfo._responses == 3:"IRLSM for multinomial needs extra information encoded in additional reponses, expected 3 response vecs, got " + _dinfo._responses;
-      double [] beta = _state.betaMultinomial();
+    private void fitCOD_multinomial(Solver s) {
+      double[] beta = _state.betaMultinomial();
+
+
       do {
         beta = beta.clone();
-        for (int c = 0; c < _nclass; ++c) {
-          boolean onlyIcpt = _state.activeDataMultinomial(c).fullN() == 0;
-          _state.setActiveClass(c);
-          LineSearchSolver ls = (_state.l1pen() == 0)
-            ? new MoreThuente(_state.gslvrMultinomial(c), _state.betaMultinomial(c,beta), _state.ginfoMultinomial(c))
-            : new SimpleBacktrackingLS(_state.gslvrMultinomial(c), _state.betaMultinomial(c,beta), _state.l1pen());
-          GLMWeightsFun glmw = new GLMWeightsFun(_parms);
-          long t1 = System.currentTimeMillis();
-          new GLMMultinomialUpdate(_state.activeDataMultinomial(), _job._key, beta, c).doAll(_state.activeDataMultinomial()._adaptedFrame);
-          long t2 = System.currentTimeMillis();
-          ComputationState.GramXY gram = _state.computeGram(ls.getX(),s);
-          long t3 = System.currentTimeMillis();
-          double [] betaCnd = s == Solver.COORDINATE_DESCENT?COD_solve(gram,_state._alpha,_state.lambda()):ADMM_solve(gram.gram,gram.xy);
-          long t4 = System.currentTimeMillis();
-          if (!onlyIcpt && !ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
-            Log.info(LogMsg("Ls failed " + ls));
-            continue;
+           for (int c = 0; c < _nclass; ++c) {
+            _state.setActiveClass(c);
+            boolean onlyIcpt = _state.activeDataMultinomial(c).fullN() == 0;
+
+            LineSearchSolver ls = (_state.l1pen() == 0)
+                    ? new MoreThuente(_state.gslvrMultinomial(c), _state.betaMultinomial(c, beta), _state.ginfoMultinomial(c))
+                    : new SimpleBacktrackingLS(_state.gslvrMultinomial(c), _state.betaMultinomial(c, beta), _state.l1pen());
+
+            new GLMMultinomialUpdate(_state.activeDataMultinomial(), _job._key, beta, c).doAll(_state.activeDataMultinomial()._adaptedFrame);
+            ComputationState.GramXY gram = _state.computeGram(_state.betaMultinomial(c, beta), s);
+            double[] betaCnd = COD_solve(gram, _state._alpha, _state.lambda());
+
+            if (!onlyIcpt && !ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
+              Log.info(LogMsg("Ls failed " + ls));
+              continue;
+            }
+            _state.setBetaMultinomial(c, beta, ls.getX());  // set new beta
           }
-          long t5 = System.currentTimeMillis();
-          _state.setBetaMultinomial(c, beta,ls.getX());
-          // update multinomial
-          Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "+" + (t4 - t3) + "+" + (t5 - t4) + "=" + (t5 - t1) + "ms, step = " + ls.step() + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
-        }
+
         _state.setActiveClass(-1);
-      } while(progress(beta,_state.gslvr().getGradient(beta)));
+      } while (progress(beta, _state.gslvr().getMultinomialLikelihood(beta))); // only need likelihood
+    }
+
+    private void fitIRLSM_multinomial(Solver s) {
+      assert _dinfo._responses == 3 : "IRLSM for multinomial needs extra information encoded in additional reponses, expected 3 response vecs, got " + _dinfo._responses;
+
+      if (s.equals(Solver.COORDINATE_DESCENT)) {
+        fitCOD_multinomial(s);
+      } else {
+        double[] beta = _state.betaMultinomial();
+        do {
+          beta = beta.clone();
+          for (int c = 0; c < _nclass; ++c) {
+            boolean onlyIcpt = _state.activeDataMultinomial(c).fullN() == 0;
+            _state.setActiveClass(c);
+            LineSearchSolver ls = (_state.l1pen() == 0)
+                    ? new MoreThuente(_state.gslvrMultinomial(c), _state.betaMultinomial(c, beta), _state.ginfoMultinomial(c))
+                    : new SimpleBacktrackingLS(_state.gslvrMultinomial(c), _state.betaMultinomial(c, beta), _state.l1pen());
+
+            long t1 = System.currentTimeMillis();
+            new GLMMultinomialUpdate(_state.activeDataMultinomial(), _job._key, beta, c).doAll(_state.activeDataMultinomial()._adaptedFrame);
+            long t2 = System.currentTimeMillis();
+            ComputationState.GramXY gram = _state.computeGram(ls.getX(), s);
+            long t3 = System.currentTimeMillis();
+            double[] betaCnd = ADMM_solve(gram.gram, gram.xy);
+
+            long t4 = System.currentTimeMillis();
+            if (!onlyIcpt && !ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
+              Log.info(LogMsg("Ls failed " + ls));
+              continue;
+            }
+            long t5 = System.currentTimeMillis();
+            _state.setBetaMultinomial(c, beta, ls.getX());
+            // update multinomial
+            Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "+" + (t4 - t3) + "+" + (t5 - t4) + "=" + (t5 - t1) + "ms, step = " + ls.step() + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
+          }
+          _state.setActiveClass(-1);
+        } while (progress(beta, _state.gslvr().getGradient(beta)));
+      }
     }
 
     // use regular gradient descend here.  Need to figure out how to adjust for the alpha, lambda for the elastic net
@@ -750,50 +784,91 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       _state.updateState(beta, l);
     }
 
-    private void fitIRLSM(Solver s) {
-      GLMWeightsFun glmw = new GLMWeightsFun(_parms);
-      double [] betaCnd = _state.beta();
+    private void fitCOD(Solver s) {
+      double[] betaCnd = _state.beta();
       LineSearchSolver ls = null;
       boolean firstIter = true;
       int iterCnt = 0;
-      try {
-        while (true) {
-          iterCnt++;
-          long t1 = System.currentTimeMillis();
-          ComputationState.GramXY gram = _state.computeGram(betaCnd,s);
-          long t2 = System.currentTimeMillis();
-          if (!_state._lsNeeded && (Double.isNaN(gram.likelihood) || _state.objective(gram.beta, gram.likelihood) > _state.objective() + _parms._objective_epsilon)) {
-            _state._lsNeeded = true;
-          } else {
-            if (!firstIter && !_state._lsNeeded && !progress(gram.beta, gram.likelihood)) {
-              System.out.println("DONE after " + (iterCnt-1) + " iterations (1)");
-              return;
-            }
-            betaCnd = s == Solver.COORDINATE_DESCENT?COD_solve(gram,_state._alpha,_state.lambda()):ADMM_solve(gram.gram,gram.xy);
+
+      while (true) { // will exit this loop when no improvements/changes detected in obj or gradient
+        iterCnt++;
+        ComputationState.GramXY gram = _state.computeGram(betaCnd, s);
+
+        if (!_state._lsNeeded && (Double.isNaN(gram.likelihood) || _state.objective(gram.beta, gram.likelihood) > _state.objective() + _parms._objective_epsilon)) {
+          _state._lsNeeded = true;
+        } else {
+          if (!firstIter && !_state._lsNeeded && !progress(gram.beta, gram.likelihood)) {
+            System.out.println("DONE after " + (iterCnt - 1) + " iterations (1)");
+            return;
           }
-          firstIter = false;
-          long t3 = System.currentTimeMillis();
-          if(_state._lsNeeded) {
-            if(ls == null)
-              ls = (_state.l1pen() == 0 && !_state.activeBC().hasBounds())
-                 ? new MoreThuente(_state.gslvr(),_state.beta(), _state.ginfo())
-                 : new SimpleBacktrackingLS(_state.gslvr(),_state.beta().clone(), _state.l1pen(), _state.ginfo());
-            if (!ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
-              Log.info(LogMsg("Ls failed " + ls));
-              return;
-            }
-            betaCnd = ls.getX();
-            if(!progress(betaCnd,ls.ginfo()))
-              return;
-            long t4 = System.currentTimeMillis();
-            Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "+" + (t4 - t3) + "=" + (t4 - t1) + "ms, step = " + ls.step() + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
-          } else
-            Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "=" + (t3 - t1) + "ms, step = " + 1 + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
+          betaCnd = COD_solve(gram, _state._alpha, _state.lambda());
         }
-      } catch(NonSPDMatrixException e) {
-        Log.warn(LogMsg("Got Non SPD matrix, stopped."));
+        firstIter = false;
+        if (_state._lsNeeded) {
+          if (ls == null)
+            ls = (_state.l1pen() == 0 && !_state.activeBC().hasBounds())
+                    ? new MoreThuente(_state.gslvr(), _state.beta(), _state.ginfo())
+                    : new SimpleBacktrackingLS(_state.gslvr(), _state.beta().clone(), _state.l1pen(), _state.ginfo());
+          if (!ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
+            Log.info(LogMsg("Ls failed " + ls));
+            return;
+          }
+          betaCnd = ls.getX();
+          if (!progress(betaCnd, ls.ginfo()))
+            return;
+        }
       }
     }
+
+
+    private void fitIRLSM(Solver s) {
+      if (s.equals(Solver.COORDINATE_DESCENT)) {
+        fitCOD(s);
+      } else {
+        double[] betaCnd = _state.beta();
+        LineSearchSolver ls = null;
+        boolean firstIter = true;
+        int iterCnt = 0;
+        try {
+          while (true) { // will exit this loop when no improvements/changes detected in obj or gradient
+            iterCnt++;
+            long t1 = System.currentTimeMillis();
+            ComputationState.GramXY gram = _state.computeGram(betaCnd, s);
+            long t2 = System.currentTimeMillis();
+            if (!_state._lsNeeded && (Double.isNaN(gram.likelihood) || _state.objective(gram.beta, gram.likelihood) > _state.objective() + _parms._objective_epsilon)) {
+              _state._lsNeeded = true;
+            } else {
+              if (!firstIter && !_state._lsNeeded && !progress(gram.beta, gram.likelihood)) {
+                System.out.println("DONE after " + (iterCnt - 1) + " iterations (1)");
+                return;
+              }
+              betaCnd = ADMM_solve(gram.gram, gram.xy);
+            }
+            firstIter = false;
+            long t3 = System.currentTimeMillis();
+            if (_state._lsNeeded) {
+              if (ls == null)
+                ls = (_state.l1pen() == 0 && !_state.activeBC().hasBounds())
+                        ? new MoreThuente(_state.gslvr(), _state.beta(), _state.ginfo())
+                        : new SimpleBacktrackingLS(_state.gslvr(), _state.beta().clone(), _state.l1pen(), _state.ginfo());
+              if (!ls.evaluate(ArrayUtils.subtract(betaCnd, ls.getX(), betaCnd))) {
+                Log.info(LogMsg("Ls failed " + ls));
+                return;
+              }
+              betaCnd = ls.getX();
+              if (!progress(betaCnd, ls.ginfo()))
+                return;
+              long t4 = System.currentTimeMillis();
+              Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "+" + (t4 - t3) + "=" + (t4 - t1) + "ms, step = " + ls.step() + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
+            } else
+              Log.info(LogMsg("computed in " + (t2 - t1) + "+" + (t3 - t2) + "=" + (t3 - t1) + "ms, step = " + 1 + ((_lslvr != null) ? ", l1solver " + _lslvr : "")));
+          }
+        } catch (NonSPDMatrixException e) {
+          Log.warn(LogMsg("Got Non SPD matrix, stopped."));
+        }
+      }
+    }
+
 
     private void fitLBFGS() {
       double [] beta = _state.beta();
@@ -1388,14 +1463,13 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
     gram.newCols = new int[0];
     return res;
   }
-  private long COD_time;
 
   private double [] COD_solve(double [][] xx, double [] xy, double [] grads, int [] newCols, double alpha, double lambda) {
     double wsumInv = 1.0/(xx[xx.length-1][xx.length-1]);
     final double betaEpsilon = _parms._beta_epsilon*_parms._beta_epsilon;
+    double updateEpsilon = 0.01*betaEpsilon;
     double l1pen = lambda * alpha;
     double l2pen = lambda*(1-alpha);
-    long t0 = System.currentTimeMillis();
     double [] diagInv = MemoryManager.malloc8d(xx.length);
     for(int i = 0; i < diagInv.length; ++i)
       diagInv[i] = 1.0/(xx[i][i] + l2pen);
@@ -1421,7 +1495,6 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         }
       }
     }
-    Log.info("COD::nzs done in " + (System.currentTimeMillis()-t0) + "ms, found " + sparseCnt + " sparse columns");
     final BetaConstraint bc = _state.activeBC();
     double [] beta = _state.beta().clone();
     int numStart = activeData.numStart();
@@ -1436,14 +1509,13 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
     }
     int iter1 = 0;
     int P = xy.length - 1;
-    // CD loop
-    long t2 = System.currentTimeMillis();
+    double maxDiff = 0;
 //    // CD loop
-    while (iter1++ < Math.max(P,500)) {
-      double maxDiff = 0;
+    while (iter1++ < Math.max(P,500)) { // not sure why we want it to exceed 1
+      maxDiff = 0;
       for (int i = 0; i < activeData._cats; ++i) {
         for(int j = activeData._catOffsets[i]; j < activeData._catOffsets[i+1]; ++j) { // can do in parallel
-          double b = bc.applyBounds(ADMM.shrinkage(grads[j], l1pen) * diagInv[j],j);
+          double b = bc.applyBounds(ADMM.shrinkage(grads[j], l1pen) * diagInv[j],j); // new beta value here
           double bd = beta[j] - b;
           if(bd != 0) {
             double diff = bd*bd*xx[j][j];
@@ -1465,7 +1537,7 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         double bd = beta[i] - b;
         double diff = bd * bd * xx[i][i];
         if (diff > maxDiff) maxDiff = diff;
-        if(diff > .01*betaEpsilon) {
+        if(diff > updateEpsilon) {
           doUpdateCD(grads, xx[i], bd, i, i + 1);
           beta[i] = b;
         }
@@ -1479,14 +1551,13 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
         doUpdateCD(grads, xx[P], bd, P, P + 1);
         beta[P] = b;
       }
-      if (maxDiff < betaEpsilon)
+      if (maxDiff < betaEpsilon) // stop if beta not changing much
         break;
     }
     long tend = System.currentTimeMillis();
-    long tdelta = (tend-t0);
-    Log.info(LogMsg("COD done after " + iter1 + " iterations and " + tdelta + "ms") + ", main loop took " + (tend-t2) + "ms, overall COD time = " + (COD_time += tdelta));
     return beta;
   }
+
   /**
    * Created by tomasnykodym on 3/30/15.
    */
@@ -1781,6 +1852,28 @@ public class GLM extends ModelBuilder<GLMModel,GLMParameters,GLMOutput> {
       _parms = glmp;
       _dinfo = dinfo;
       _l2pen = l2pen;
+    }
+
+    /*
+    Only update the likelihood function for multinomial while leaving all else stale and old.  This is only
+    used by multinomial with COD.
+     */
+    public GLMGradientInfo getMultinomialLikelihood(double[] beta) {
+      assert _parms._family.equals(Family.multinomial) : "GLMGradientInfo.getMultinomialLikelihood is only used by multinomial GLM";
+      assert _betaMultinomial != null : "Multinomial coefficents cannot be null.";
+
+      int off = 0;
+      for (int i = 0; i < _betaMultinomial.length; ++i) {
+        System.arraycopy(beta, off, _betaMultinomial[i], 0, _betaMultinomial[i].length);
+        off += _betaMultinomial[i].length;
+      }
+      GLMMultinomialLikelihoodTask gt = new GLMMultinomialLikelihoodTask(_job, _dinfo, _l2pen, _betaMultinomial,
+              _parms).doAll(_dinfo._adaptedFrame);
+      double l2pen = 0;
+      for (double[] b : _betaMultinomial) {
+        l2pen += ArrayUtils.l2norm2(b, _dinfo._intercept);
+      }
+      return new GLMGradientInfo(gt._likelihood, gt._likelihood * _parms._obj_reg + .5 * _l2pen * l2pen, null);
     }
 
     @Override

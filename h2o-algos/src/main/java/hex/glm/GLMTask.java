@@ -783,6 +783,150 @@ public abstract class GLMTask  {
     }
   }
 
+  static class GLMMultinomialLikelihoodTask extends MRTask<GLMMultinomialLikelihoodTask> {
+    final double [][] _beta;
+    final transient double _currentLambda;
+    final transient double _reg;
+    private double [][] _gradient;
+    double _likelihood;
+    Job _job;
+    final boolean _sparse;
+    final DataInfo _dinfo;
+    // parameters used by ordinal regression
+    Link _link;           // link function, e.g. ologit, ologlog, oprobit
+    GLMParameters _glmp;  // parameter used to access linkinv and linkinvderiv functions
+    int _secondToLast;    // denote class label nclass-2
+    int _theLast;         // denote class label nclass-1
+    int _interceptId;     // index of offset/intercept in double[][] _beta
+
+    /**
+     *  The main function is this task is to calculate the likelihood function for multinomials and nothing else.
+     *
+     * @param job
+     * @param dinfo
+     * @param lambda
+     * @param beta coefficients as 2D array [P][K]
+     * @param reg
+     */
+    public GLMMultinomialLikelihoodTask(Job job, DataInfo dinfo, double lambda, double[][] beta, double reg) {
+      _currentLambda = lambda;
+      _reg = reg;
+      // need to flip the beta
+      _beta = new double[beta[0].length][beta.length];
+      for(int i = 0; i < _beta.length; ++i)
+        for(int j = 0; j < _beta[i].length; ++j)
+          _beta[i][j] = beta[j][i];
+      _job = job;
+      _sparse = FrameUtils.sparseRatio(dinfo._adaptedFrame) < .125;
+      _dinfo = dinfo;
+      if(_dinfo._offset) throw H2O.unimpl();
+    }
+
+    public GLMMultinomialLikelihoodTask(Job job, DataInfo dinfo, double lambda, double[][] beta, GLMParameters glmp) {
+      this(job, dinfo, lambda, beta, glmp._obj_reg);
+      _interceptId = _beta.length-1;
+      _link = glmp._link;
+      _glmp = glmp;
+    }
+    // common between multinomial and ordinal
+    private final void computeCategoricalEtas(Chunk [] chks, double [][] etas, double [] vals, int [] ids) {
+      // categoricals
+      for(int cid = 0; cid < _dinfo._cats; ++cid){
+        Chunk c = chks[cid];
+        if(c.isSparseZero()) {
+          int nvals = c.getSparseDoubles(vals,ids,-1);
+          for(int i = 0; i < nvals; ++i){
+            int id = _dinfo.getCategoricalId(cid,(int)vals[i]);
+            if(id >=0)ArrayUtils.add(etas[ids[i]],_beta[id]);
+          }
+        } else {
+          c.getIntegers(ids, 0, c._len,-1);
+          for(int i = 0; i < ids.length; ++i){
+            int id = _dinfo.getCategoricalId(cid,ids[i]);
+            if(id >=0) ArrayUtils.add(etas[i],_beta[id]);
+          }
+        }
+      }
+    }
+
+    private final void computeNumericEtas(Chunk [] chks, double [][] etas, double [] vals, int [] ids) {
+      int numOff = _dinfo.numStart();
+      for(int cid = 0; cid < _dinfo._nums; ++cid){
+        double [] b = _beta[numOff+cid];
+        double scale = _dinfo._normMul != null?_dinfo._normMul[cid]:1;
+        double NA = _dinfo._numMeans[cid];
+        Chunk c = chks[cid+_dinfo._cats];
+        if(c.isSparseZero() || c.isSparseNA()){
+          int nvals = c.getSparseDoubles(vals,ids,NA);
+          for(int i = 0; i < nvals; ++i) {
+            double d = vals[i]*scale;
+            ArrayUtils.wadd(etas[ids[i]],b,d);
+          }
+        } else {
+          c.getDoubles(vals,0,vals.length,NA);
+          double off = _dinfo._normSub != null?_dinfo._normSub[cid]:0;
+          for(int i = 0; i < vals.length; ++i) {
+            double d = (vals[i] - off) * scale;
+            ArrayUtils.wadd(etas[i],b,d);
+          }
+        }
+      }
+    }
+
+
+    final void computeGradientMultipliers(double [][] etas, double [] ys, double [] ws){
+      int K = _beta[0].length;
+      double [] exps = new double[K+1];
+      for(int i = 0; i < etas.length; ++i) {
+        double w = ws[i];
+        if(w == 0){
+          Arrays.fill(etas[i],0);
+          continue;
+        }
+        int y = (int) ys[i];
+        double logSumExp = computeMultinomialEtas(etas[i], exps);
+        _likelihood -= w * (etas[i][y] - logSumExp);
+      }
+    }
+
+    @Override public void map(Chunk[] chks) {
+      if(_job != null && _job.stop_requested()) throw new Job.JobCancelledException();
+      int numStart = _dinfo.numStart();
+      int K = _beta[0].length;// number of classes
+      int P = _beta.length;   // number of predictors (+ intercept)
+      int M = chks[0]._len;   // number of rows in this chunk of data
+      double [][] etas = new double[M][K];  // store multiplier for non-intercept parameters
+      double[] offsets = new double[K];
+      for(int k = 0; k < K; ++k)
+        offsets[k] = _beta[P-1][k]; // intercept
+      // sparse offset + intercept
+      if(_dinfo._normSub != null) {
+        for(int i = 0; i < _dinfo._nums; ++i)
+          if(chks[_dinfo._cats + i].isSparseZero())
+            ArrayUtils.wadd(offsets,_beta[numStart + i], -_dinfo._normSub[i]*_dinfo._normMul[i]);
+      }
+      for (int i = 0; i < chks[0]._len; ++i)
+        System.arraycopy(offsets, 0, etas[i], 0, K);
+      Chunk response = chks[_dinfo.responseChunkId(0)];
+      double [] ws = MemoryManager.malloc8d(M);
+      if(_dinfo._weights) ws = chks[_dinfo.weightChunkId()].getDoubles(ws,0,M);
+      else Arrays.fill(ws,1);
+      chks = Arrays.copyOf(chks,chks.length-1-(_dinfo._weights?1:0));
+      double [] vals = MemoryManager.malloc8d(M);
+      int [] ids = MemoryManager.malloc4(M);
+      computeCategoricalEtas(chks,etas,vals,ids);
+      computeNumericEtas(chks,etas,vals,ids);
+      computeGradientMultipliers(etas, response.getDoubles(vals, 0, M), ws);
+    }
+
+    @Override
+    public void reduce(GLMMultinomialLikelihoodTask gmgt){
+      _likelihood += gmgt._likelihood;
+    }
+
+  }
+
+
   // share between multinomial and ordinal regression
   static class GLMMultinomialGradientTask extends MRTask<GLMMultinomialGradientTask> {
     final double [][] _beta;
@@ -909,8 +1053,9 @@ public abstract class GLMTask  {
         } else {
           double off = _dinfo._normSub == null?0:_dinfo._normSub[cid];
           c.getDoubles(vals,0,vals.length,NA);
-          for(int i = 0; i < vals.length; ++i)
-            ArrayUtils.wadd(g,etas[i],(vals[i] - off) * scale);
+          for(int i = 0; i < vals.length; ++i) {
+            ArrayUtils.wadd(g, etas[i], (vals[i] - off) * scale);
+          }
         }
       }
     }
