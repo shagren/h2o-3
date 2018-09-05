@@ -60,6 +60,7 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     DeepLearning,
     StackedEnsemble,
     XGBoost,
+    LightGBM { @Override String urlName() { return XGBoost.urlName(); } }
     ;
 
     String urlName() {
@@ -706,15 +707,23 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     return false;
   }
 
-
-  void defaultXGBoosts() {
+  void defaultXGBoosts(boolean emulateLightGBM) {
     if (!ExtensionManager.getInstance().isCoreExtensionEnabled("XGBoost")) {
       userFeedback.warn(Stage.ModelTraining, "AutoML: GBoost extension is not available; skipping default XGBoost");
       return;
     }
     Job xgBoostJob;
 
+    Algo algo = Algo.XGBoost;
+    Key<Model> key = null;
+
     XGBoostParameters xgBoostParameters = new XGBoostParameters();
+    if (emulateLightGBM) {
+      algo = Algo.LightGBM;
+      xgBoostParameters._tree_method = XGBoostParameters.TreeMethod.hist;
+      xgBoostParameters._grow_policy = XGBoostParameters.GrowPolicy.lossguide;
+    }
+
     setCommonModelBuilderParams(xgBoostParameters);
     //todo: do we need to validateXgBoostParameter?
     // setDistribution: no way to identify gaussian, poisson, laplace? using descriptive statistics?
@@ -723,6 +732,8 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
                     : DistributionFamily.AUTO;
 
     xgBoostParameters._score_tree_interval = 5;
+    xgBoostParameters._stopping_rounds = 5;
+    xgBoostParameters._stopping_tolerance = Math.min(1e-2, RandomDiscreteValueSearchCriteria.default_stopping_tolerance_for_frame(this.trainingFrame));
 
     xgBoostParameters._ntrees = 10000;
     xgBoostParameters._learn_rate = 0.01;
@@ -735,9 +746,16 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     xgBoostParameters._col_sample_rate = 0.8;
     xgBoostParameters._col_sample_rate_per_tree = 0.8;
 
+    if (emulateLightGBM) {
+      xgBoostParameters._max_leaves = 1 << xgBoostParameters._max_depth;
+      xgBoostParameters._max_depth = xgBoostParameters._max_depth * 2;
+//      xgBoostParameters._min_data_in_leaf = (float)xgBoostParameters._min_rows;
+      xgBoostParameters._min_sum_hessian_in_leaf = (float)xgBoostParameters._min_rows;
+    }
 
-    xgBoostJob = trainModel(null, Algo.XGBoost, xgBoostParameters);
-    pollAndUpdateProgress(Stage.ModelTraining, xgBoostJob == null ? null : xgBoostJob._key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
+    key = modelKey(algo.name());
+    xgBoostJob = trainModel(key, algo, xgBoostParameters);
+    pollAndUpdateProgress(Stage.ModelTraining,  key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
 
     //XGB 2
     xgBoostParameters._max_depth = 10;
@@ -746,9 +764,16 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     xgBoostParameters._col_sample_rate = 0.8;
     xgBoostParameters._col_sample_rate_per_tree = 0.8;
 
+    if (emulateLightGBM) {
+      xgBoostParameters._max_leaves = 1 << xgBoostParameters._max_depth;
+      xgBoostParameters._max_depth = xgBoostParameters._max_depth * 2;
+//      xgBoostParameters._min_data_in_leaf = (float)xgBoostParameters._min_rows;
+      xgBoostParameters._min_sum_hessian_in_leaf = (float)xgBoostParameters._min_rows;
+    }
 
-    xgBoostJob = trainModel(null, Algo.XGBoost, xgBoostParameters);
-    pollAndUpdateProgress(Stage.ModelTraining, xgBoostJob == null ? null : xgBoostJob._key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
+    key = modelKey(algo.name());
+    xgBoostJob = trainModel(key, algo, xgBoostParameters);
+    pollAndUpdateProgress(Stage.ModelTraining,  key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
 
     //XGB 3
     xgBoostParameters._max_depth = 20;
@@ -757,9 +782,16 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     xgBoostParameters._col_sample_rate = 0.8;
     xgBoostParameters._col_sample_rate_per_tree = 0.8;
 
+    if (emulateLightGBM) {
+      xgBoostParameters._max_leaves = 1 << xgBoostParameters._max_depth;
+      xgBoostParameters._max_depth = xgBoostParameters._max_depth * 2;
+//      xgBoostParameters._min_data_in_leaf = (float)xgBoostParameters._min_rows;
+      xgBoostParameters._min_sum_hessian_in_leaf = (float)xgBoostParameters._min_rows;
+    }
 
-    xgBoostJob = trainModel(null, Algo.XGBoost, xgBoostParameters);
-    pollAndUpdateProgress(Stage.ModelTraining, xgBoostJob == null ? null : xgBoostJob._key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
+    key = modelKey(algo.name());
+    xgBoostJob = trainModel(key, algo, xgBoostParameters);
+    pollAndUpdateProgress(Stage.ModelTraining,  key.toString(), 10, this.job(), xgBoostJob, JobType.ModelBuild);
   }
 
 
@@ -776,17 +808,22 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
             : DistributionFamily.AUTO;
 
     xgBoostParameters._score_tree_interval = 5;
+    xgBoostParameters._stopping_rounds = 5;
+    xgBoostParameters._stopping_tolerance = Math.min(1e-2, RandomDiscreteValueSearchCriteria.default_stopping_tolerance_for_frame(this.trainingFrame));
+
+    xgBoostParameters._ntrees = 10000;
+    xgBoostParameters._learn_rate = 0.01;
+    xgBoostParameters._min_split_improvement = 0.01f; //DAI default
 
     Map<String, Object[]> searchParams = new HashMap<>();
-//    searchParams.put("_ntrees", new Integer[]{50, 100, 150, 200}); // = _n_estimators
-    searchParams.put("_ntrees", new Integer[]{100, 1000, 10000}); // = _n_estimator
+//    searchParams.put("_ntrees", new Integer[]{100, 1000, 10000}); // = _n_estimators
     searchParams.put("_max_depth", new Integer[]{5, 10, 15, 20});
     searchParams.put("_min_rows", new Double[]{0.01, 0.1, 1.0, 3.0, 5.0, 10.0, 15.0, 20.0});  // = _min_child_weight
     searchParams.put("_sample_rate", new Double[]{0.6, 0.8, 1.0}); // = _subsample
     searchParams.put("_col_sample_rate" , new Double[]{ 0.6, 0.8, 1.0}); // = _colsample_bylevel"
     searchParams.put("_col_sample_rate_per_tree", new Double[]{ 0.7, 0.8, 0.9, 1.0}); // = _colsample_bytree: start higher to always use at least about 40% of columns
-    searchParams.put("_learn_rate", new Double[]{0.01, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.5, 0.8, 1.0}); // = _eta
-    searchParams.put("_min_split_improvement", new Float[]{0.01f, 0.05f, 0.1f, 0.5f, 1f, 5f, 10f, 50f}); // = _gamma
+//    searchParams.put("_learn_rate", new Double[]{0.01, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.5, 0.8, 1.0}); // = _eta
+//    searchParams.put("_min_split_improvement", new Float[]{0.01f, 0.05f, 0.1f, 0.5f, 1f, 5f, 10f, 50f}); // = _gamma
 //    searchParams.put("_tree_method", new XGBoostParameters.TreeMethod[]{XGBoostParameters.TreeMethod.auto});
     searchParams.put("_booster", new XGBoostParameters.Booster[]{ //gblinear crashes currently
             XGBoostParameters.Booster.gbtree, //default, let's use it more often
@@ -1074,7 +1111,8 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
 //    isClassification = frameMetadata.isClassification();
 
 
-    defaultXGBoosts();
+    defaultXGBoosts(true);
+    defaultXGBoosts(false);
 
     ///////////////////////////////////////////////////////////
     // build a fast RF with default settings...
@@ -1104,7 +1142,7 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     // below.
     ///////////////////////////////////////////////////////////
     Key<Grid> gbmGridKey = gridKey(Algo.GBM.name());
-    defaultGBMs(gbmGridKey);  // NOTE: does its own polling, 5 models with 10 work units each
+    defaultGBMs(null);  // NOTE: does its own polling, 5 models with 10 work units each
 
 
     ///////////////////////////////////////////////////////////
