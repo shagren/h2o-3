@@ -713,19 +713,19 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
       return;
     }
     Job xgBoostJob;
+    Key<Model> key;
 
-    Algo algo = Algo.XGBoost;
-    Key<Model> key = null;
 
     XGBoostParameters xgBoostParameters = new XGBoostParameters();
+    setCommonModelBuilderParams(xgBoostParameters);
+
+    Algo algo = Algo.XGBoost;
     if (emulateLightGBM) {
       algo = Algo.LightGBM;
       xgBoostParameters._tree_method = XGBoostParameters.TreeMethod.hist;
       xgBoostParameters._grow_policy = XGBoostParameters.GrowPolicy.lossguide;
     }
 
-    setCommonModelBuilderParams(xgBoostParameters);
-    //todo: do we need to validateXgBoostParameter?
     // setDistribution: no way to identify gaussian, poisson, laplace? using descriptive statistics?
     xgBoostParameters._distribution = getResponseColumn().isBinary() && !(getResponseColumn().isNumeric()) ? DistributionFamily.bernoulli
                     : getResponseColumn().isCategorical() ? DistributionFamily.multinomial
@@ -795,7 +795,7 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
   }
 
 
-  Job<Grid> defaultSearchXGBoost(Key<Grid> gridKey) {
+  Job<Grid> defaultSearchXGBoost(Key<Grid> gridKey, boolean emulateLightGBM) {
     if (!ExtensionManager.getInstance().isCoreExtensionEnabled("XGBoost")) {
       userFeedback.warn(Stage.ModelTraining, "AutoML: GBoost extension is not available; skipping default XGBoost hyperparameter search");
       return null;
@@ -803,6 +803,13 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
 
     XGBoostParameters xgBoostParameters = new XGBoostParameters();
     setCommonModelBuilderParams(xgBoostParameters);
+
+    Algo algo = Algo.XGBoost;
+    if (emulateLightGBM) {
+      algo = Algo.LightGBM;
+      xgBoostParameters._tree_method = XGBoostParameters.TreeMethod.hist;
+      xgBoostParameters._grow_policy = XGBoostParameters.GrowPolicy.lossguide;
+    }
     xgBoostParameters._distribution = getResponseColumn().isBinary() && !(getResponseColumn().isNumeric()) ? DistributionFamily.bernoulli
             : getResponseColumn().isCategorical() ? DistributionFamily.multinomial
             : DistributionFamily.AUTO;
@@ -817,8 +824,16 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
 
     Map<String, Object[]> searchParams = new HashMap<>();
 //    searchParams.put("_ntrees", new Integer[]{100, 1000, 10000}); // = _n_estimators
-    searchParams.put("_max_depth", new Integer[]{5, 10, 15, 20});
-    searchParams.put("_min_rows", new Double[]{0.01, 0.1, 1.0, 3.0, 5.0, 10.0, 15.0, 20.0});  // = _min_child_weight
+
+    if (emulateLightGBM) {
+      searchParams.put("_max_leaves", new Integer[]{1<<5, 1<<10, 1<<15, 1<<20});
+      searchParams.put("_max_depth", new Integer[]{10, 20, 50});
+      searchParams.put("_min_sum_hessian_in_leaf", new Double[]{0.01, 0.1, 1.0, 3.0, 5.0, 10.0, 15.0, 20.0});
+    } else {
+      searchParams.put("_max_depth", new Integer[]{5, 10, 15, 20});
+      searchParams.put("_min_rows", new Double[]{0.01, 0.1, 1.0, 3.0, 5.0, 10.0, 15.0, 20.0});  // = _min_child_weight
+    }
+
     searchParams.put("_sample_rate", new Double[]{0.6, 0.8, 1.0}); // = _subsample
     searchParams.put("_col_sample_rate" , new Double[]{ 0.6, 0.8, 1.0}); // = _colsample_bylevel"
     searchParams.put("_col_sample_rate_per_tree", new Double[]{ 0.7, 0.8, 0.9, 1.0}); // = _colsample_bytree: start higher to always use at least about 40% of columns
@@ -834,7 +849,7 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     searchParams.put("_reg_lambda", new Float[]{0.001f, 0.01f, 0.1f, 1f, 10f, 100f});
     searchParams.put("_reg_alpha", new Float[]{0.001f, 0.01f, 0.1f, 0.5f, 1f});
 
-    Job<Grid> xgBoostJob = hyperparameterSearch(gridKey, Algo.XGBoost, xgBoostParameters, searchParams);
+    Job<Grid> xgBoostJob = hyperparameterSearch(gridKey, algo, xgBoostParameters, searchParams);
     return xgBoostJob;
   }
 
@@ -1152,7 +1167,11 @@ public final class AutoML extends Lockable<AutoML> implements TimedH2ORunnable {
     pollAndUpdateProgress(Stage.ModelTraining, "Default Deep Learning build", 20, this.job(), defaultDeepLearningJob, JobType.ModelBuild);
 
 
-    Job<Grid> xgBoostSearchJob = defaultSearchXGBoost(gridKey(Algo.XGBoost.name()));
+    Job<Grid> lightGBMSearchJob = defaultSearchXGBoost(gridKey(Algo.LightGBM.name()), true);
+    pollAndUpdateProgress(Stage.ModelTraining, "LightGBM hyperparameter search", 150, this.job(), lightGBMSearchJob, JobType.HyperparamSearch);
+
+
+    Job<Grid> xgBoostSearchJob = defaultSearchXGBoost(gridKey(Algo.XGBoost.name()), false);
     pollAndUpdateProgress(Stage.ModelTraining, "XGBoost hyperparameter search", 150, this.job(), xgBoostSearchJob, JobType.HyperparamSearch);
 
     ///////////////////////////////////////////////////////////
