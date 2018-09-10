@@ -203,6 +203,30 @@ def call(final pipelineContext) {
       additionalTestPackages: [pipelineContext.getBuildConfig().COMPONENT_R],
       customData: [algorithm: 'xgb-dmlc'], makefilePath: pipelineContext.getBuildConfig().BENCHMARK_MAKEFILE_PATH,
       nodeLabel: pipelineContext.getBuildConfig().getBenchmarkNodeLabel(),
+    ],
+    [
+      stageName: 'H2O GPU XGB Benchmark', executionScript: 'h2o-3/scripts/jenkins/groovy/benchmarkStage.groovy',
+      timeoutValue: 120, target: 'benchmark', component: pipelineContext.getBuildConfig().COMPONENT_ANY,
+      additionalTestPackages: [pipelineContext.getBuildConfig().COMPONENT_R],
+      customData: [algorithm: 'xgb'], makefilePath: pipelineContext.getBuildConfig().BENCHMARK_MAKEFILE_PATH,
+      nodeLabel: pipelineContext.getBuildConfig().getGPUBenchmarkNodeLabel(),
+      xgbGPU: true
+    ],
+    [
+      stageName: 'Vanilla GPU XGB Benchmark', executionScript: 'h2o-3/scripts/jenkins/groovy/benchmarkStage.groovy',
+      timeoutValue: 120, target: 'benchmark-xgb-vanilla', component: pipelineContext.getBuildConfig().COMPONENT_ANY,
+      additionalTestPackages: [pipelineContext.getBuildConfig().COMPONENT_PY],
+      customData: [algorithm: 'xgb-vanilla'], makefilePath: pipelineContext.getBuildConfig().BENCHMARK_MAKEFILE_PATH,
+      nodeLabel: pipelineContext.getBuildConfig().getGPUBenchmarkNodeLabel(),
+      xgbGPU: true
+    ],
+    [
+      stageName: 'DMLC GPU XGB Benchmark', executionScript: 'h2o-3/scripts/jenkins/groovy/benchmarkStage.groovy',
+      timeoutValue: 120, target: 'build-and-benchmark-latest-dmlc-r-xgboost-gpu', component: pipelineContext.getBuildConfig().COMPONENT_ANY,
+      additionalTestPackages: [pipelineContext.getBuildConfig().COMPONENT_R],
+      customData: [algorithm: 'xgb-dmlc'], makefilePath: pipelineContext.getBuildConfig().BENCHMARK_MAKEFILE_PATH,
+      nodeLabel: pipelineContext.getBuildConfig().getGPUBenchmarkNodeLabel(),
+      xgbGPU: true
     ]
   ]
 
@@ -407,7 +431,8 @@ private void executeInParallel(final jobs, final pipelineContext) {
           archiveFiles = c['archiveFiles']
           activatePythonEnv = c['activatePythonEnv']
           activateR = c['activateR']
-	      customDockerArgs = c['customDockerArgs']
+          customDockerArgs = c['customDockerArgs']
+	      xgbGPU = c['xgbGPU']
         }
       }
     ]
@@ -449,9 +474,11 @@ private void invokeStage(final pipelineContext, final body) {
   if (config.archiveFiles == null) {
     config.archiveFiles = true
   }
-
   if (config.installRPackage == null) {
       config.installRPackage = true
+  }
+  if (config.xgbGPU == null) {
+      config.xgbGPU = false
   }
 
   if (pipelineContext.getBuildConfig().componentChanged(config.component)) {

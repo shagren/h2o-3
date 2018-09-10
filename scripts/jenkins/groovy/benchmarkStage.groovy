@@ -22,7 +22,11 @@ def call(final pipelineContext, final stageConfig) {
   }
 
   def prepareBenchmarkFolderConfig = pipelineContext.getPrepareBenchmarkDirStruct(this, ML_BENCHMARK_ROOT)
-  def benchmarkFolderConfig = prepareBenchmarkFolderConfig(stageConfig.customData.algorithm, env.GIT_SHA, env.BRANCH_NAME)
+  def s3AlgorithFolder = stageConfig.customData.algorithm
+  if (stageConfig.xgbGPU) {
+      s3AlgorithFolder = "-xgb"
+  }
+  def benchmarkFolderConfig = prepareBenchmarkFolderConfig(s3AlgorithFolder, env.GIT_SHA, env.BRANCH_NAME)
   GString outputPath = "${env.workspace}/${pipelineContext.getUtils().stageNameToDirName(stageConfig.stageName)}/${benchmarkFolderConfig.getOutputDir()}"
   sh "rm -rf ${outputPath} && mkdir -p ${outputPath}"
 
