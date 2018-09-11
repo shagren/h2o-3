@@ -949,4 +949,59 @@ public class FrameUtils {
       if (l != null) l.delete();
     }
   }
+
+  public static class CalculateWeightMeanSTD extends MRTask {
+    public double _weightedEleSum;
+    public double _weightedEleSqSum;
+    public double _weightedCount;
+    public double _weightedMean;
+    public double _weightedStd;
+    public int _targetColumnIndex;
+    public int _weightColumnIndex;
+    public Frame _dataFrame;
+
+    public CalculateWeightMeanSTD(Frame dataFrame, int targetIndex, int weightIndex) {
+      _dataFrame = dataFrame;
+      assert targetIndex < dataFrame.numCols():"Target column index exceeds actual data frame columns.";
+      assert weightIndex < dataFrame.numCols():"Weight column index exceeds actual data frame columns.";
+      _targetColumnIndex = targetIndex;
+      _weightColumnIndex = weightIndex;
+    }
+
+    public void map(Chunk[] cs) {
+      _weightedEleSum = 0;
+      _weightedEleSqSum = 0;
+      _weightedCount = 0;
+      // 0 contains prediction, 1 columns weight
+      for (int rindex=0; rindex<cs[0]._len; rindex++) {
+        double v1 = cs[_targetColumnIndex].atd(rindex)*cs[_weightColumnIndex].atd(rindex);
+        _weightedEleSum += v1;
+        _weightedEleSqSum += v1*v1;
+        _weightedCount += cs[_weightColumnIndex].atd(rindex);
+      }
+    }
+
+    public void reduce(CalculateWeightMeanSTD other) {
+      _weightedEleSum += other._weightedEleSum;
+      _weightedEleSqSum += other._weightedEleSqSum;
+      _weightedCount += other._weightedCount;
+    }
+
+    public void postGlobal() {
+      _weightedMean = _weightedCount==0?Double.NaN:_weightedEleSum/_weightedCount;  // return NaN for bad input
+      _weightedStd = _weightedCount==0?Double.NaN:(_weightedEleSqSum/_weightedCount-_weightedMean*_weightedMean);  // return NaN for bad input
+    }
+
+    public double getWeightedMean() {
+      return _weightedMean;
+    }
+
+    public double getWeightedStd() {
+      return _weightedStd;
+    }
+
+    public double getWeightedCount() {
+      return _weightedCount;
+    }
+  }
 }

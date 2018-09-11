@@ -5,6 +5,8 @@ import water.*;
 import water.api.schemas3.KeyV3;
 import water.fvec.Frame;
 import water.fvec.Vec;
+import water.rapids.Rapids;
+import water.util.FrameUtils.CalculateWeightMeanSTD;
 import water.util.Log;
 import water.util.TwoDimTable;
 
@@ -16,8 +18,10 @@ public class PartialDependence extends Lockable<PartialDependence> {
   public Key<Model> _model_id;
   public Key<Frame> _frame_id;
   public String[] _cols;
+  public int _weightColumnIndex =-1;  // weight column index, -1 implies no weight
   public int _nbins = 20;
   public TwoDimTable[] _partial_dependence_data; //OUTPUT
+  public Frame _predCol;
 
   public PartialDependence(Key<PartialDependence> dest, Job j) {
     super(dest);
@@ -66,11 +70,22 @@ public class PartialDependence extends Lockable<PartialDependence> {
           Log.info("Selecting the top " + _cols.length + " features from the model's variable importances");
         }
       }
+
+
     }
     if (_nbins < 2) {
       throw new IllegalArgumentException("_nbins must be >=2.");
     }
     final Frame fr = _frame_id.get();
+
+    if (_weightColumnIndex >= 0) { // grab and make weight column as a separate frame
+      if (!fr.vec(_weightColumnIndex).isNumeric() || fr.vec(_weightColumnIndex).isCategorical())
+        throw new IllegalArgumentException("Weight column " + _weightColumnIndex + " must be a numerical column.");
+      _predCol = new Frame(fr.vec(_weightColumnIndex));
+      _predCol._key = Key.make();
+      DKV.put(_predCol);
+    }
+
     for (int i = 0; i < _cols.length; ++i) {
       final String col = _cols[i];
       Vec v = fr.vec(col);
@@ -109,7 +124,6 @@ public class PartialDependence extends Lockable<PartialDependence> {
         final double stdErrorOfTheMeanResponse[] = new double[colVals.length];
 
         final boolean cat = fr.vec(col).isCategorical();
-
         // loop over column values (fill one PartialDependence)
         for (int k = 0; k < colVals.length; ++k) {
           final double value = colVals[k];
@@ -127,13 +141,26 @@ public class PartialDependence extends Lockable<PartialDependence> {
               try {
                 preds = _model_id.get().score(test, Key.make().toString(), _job, false);
                 if (_model_id.get()._output.nclasses() == 2) {
-                  meanResponse[which] = preds.vec(2).mean();
-                  stddevResponse[which] = preds.vec(2).sigma();
-                  stdErrorOfTheMeanResponse[which] = preds.vec(2).sigma()/ Math.sqrt(preds.numRows());
+                  if (_weightColumnIndex >= 0) { // calculated weighted statistics
+                    String cbindStr = "(cbind "+preds._key.toString() +" " + _predCol._key.toString() + ")";
+                    double[] meanStdErr = getWeightedStat(preds, _predCol,cbindStr, 2);
+                    meanResponse[which] = meanStdErr[0]; stddevResponse[which] = meanStdErr[1]; stdErrorOfTheMeanResponse[which] = meanStdErr[2];
+                  } else {
+                    meanResponse[which] = preds.vec(2).mean();
+                    double std = preds.vec(2).sigma();
+                    stddevResponse[which] = std;
+                    stdErrorOfTheMeanResponse[which] = std / Math.sqrt(preds.numRows());
+                  }
                 } else if (_model_id.get()._output.nclasses() == 1) {
-                  meanResponse[which] = preds.vec(0).mean();
-                  stddevResponse[which] = preds.vec(0).sigma();
-                  stdErrorOfTheMeanResponse[which] = preds.vec(0).sigma()/ Math.sqrt(preds.numRows());
+                  if (_weightColumnIndex >= 0) {
+                    String cbindStr = "(cbind " + _predCol._key.toString()+preds._key.toString() +")";
+                    double[] meanStdErr = getWeightedStat(preds, _predCol,cbindStr, 0);
+                    meanResponse[which] = meanStdErr[0]; stddevResponse[which] = meanStdErr[1]; stdErrorOfTheMeanResponse[which] = meanStdErr[2];
+                  } else {
+                    meanResponse[which] = preds.vec(0).mean();
+                    stddevResponse[which] = preds.vec(0).sigma();
+                    stdErrorOfTheMeanResponse[which] = preds.vec(0).sigma() / Math.sqrt(preds.numRows());
+                  }
                 } else throw H2O.unimpl();
               } finally {
                 if (preds != null) preds.remove();
@@ -167,7 +194,24 @@ public class PartialDependence extends Lockable<PartialDependence> {
         if (_job.stop_requested())
           break;
       }
+      if (_predCol != null) {
+        DKV.remove(_predCol._key);
+        _predCol.remove();
+      }
       tryComplete();
+    }
+
+    public double[] getWeightedStat(Frame preds, Frame predinterest, String rapidsExpression, int targetIndex) {
+      double[] meanSigErr = new double[]{0,0,0};
+      Frame predWithWeight = Rapids.exec(rapidsExpression).getFrame();
+      CalculateWeightMeanSTD calMeansSTD = new CalculateWeightMeanSTD(predWithWeight, targetIndex, predWithWeight.numCols()-1);
+      calMeansSTD.doAll(predWithWeight);
+
+      meanSigErr[0] = calMeansSTD.getWeightedMean();
+      meanSigErr[1] = calMeansSTD.getWeightedStd();
+      meanSigErr[2] = meanSigErr[1] / Math.sqrt(calMeansSTD.getWeightedCount());
+
+      return meanSigErr;
     }
 
     @Override
@@ -185,5 +229,6 @@ public class PartialDependence extends Lockable<PartialDependence> {
   }
 
   @Override public Class<KeyV3.PartialDependenceKeyV3> makeSchema() { return KeyV3.PartialDependenceKeyV3.class; }
+
 }
 

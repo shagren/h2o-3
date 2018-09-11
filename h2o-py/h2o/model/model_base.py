@@ -882,7 +882,8 @@ class ModelBase(backwards_compatible()):
         if not server: plt.show()
 
 
-    def partial_plot(self, data, cols, destination_key=None, nbins=20, plot=True, plot_stddev = True, figsize=(7, 10), server=False):
+    def partial_plot(self, data, cols, destination_key=None, nbins=20, weight_column_index=-1,
+                     plot=True, plot_stddev = True, figsize=(7, 10), server=False):
         """
         Create partial dependence plot which gives a graphical depiction of the marginal effect of a variable on the
         response. The effect of a variable is measured in change in the mean response.
@@ -891,6 +892,7 @@ class ModelBase(backwards_compatible()):
         :param cols: Feature(s) for which partial dependence will be calculated.
         :param destination_key: An key reference to the created partial dependence tables in H2O.
         :param nbins: Number of bins used. For categorical columns make sure the number of bins exceed the level count.
+        :param weight_column_index: indicate column that contains weight to be applied to pdp
         :param plot: A boolean specifying whether to plot partial dependence table.
         :param plot_stddev: A boolean specifying whether to add std err to partial dependence plot.
         :param figsize: Dimension/size of the returning plots, adjust to fit your output cells.
@@ -909,6 +911,11 @@ class ModelBase(backwards_compatible()):
         for xi in cols:
             if xi not in data.names:
                 raise H2OValueError("Column %s does not exist in the training frame" % xi)
+        if isinstance(weight_column_index, int) and (weight_column_index > -1) and (weight_column_index >= data.ncol):
+            raise H2OValueError("Column %s does not exist in the training frame" % weight_column_index)
+        elif isinstance(weight_column_index, str): # index is a name
+            if weight_column_index not in data.names:
+                raise H2OValueError("Column %s does not exist in the training frame" % weight_column_index)
 
         kwargs = {}
         kwargs["cols"] = cols
@@ -916,6 +923,7 @@ class ModelBase(backwards_compatible()):
         kwargs["frame_id"] = data.frame_id
         kwargs["nbins"] = nbins
         kwargs["destination_key"] = destination_key
+        kwargs["weightColumnIndex"] = weight_column_index
 
         json = H2OJob(h2o.api("POST /3/PartialDependence/", data=kwargs),  job_type="PartialDependencePlot").poll()
         json = h2o.api("GET /3/PartialDependence/%s" % json.dest_key)
