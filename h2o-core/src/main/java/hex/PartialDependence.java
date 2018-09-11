@@ -82,7 +82,10 @@ public class PartialDependence extends Lockable<PartialDependence> {
     if (_weightColumnIndex >= 0) { // grab and make weight column as a separate frame
       if (!fr.vec(_weightColumnIndex).isNumeric() || fr.vec(_weightColumnIndex).isCategorical())
         throw new IllegalArgumentException("Weight column " + _weightColumnIndex + " must be a numerical column.");
-      _predCol = new Frame(fr.vec(_weightColumnIndex));
+      Vec newWeight = fr.vec(_weightColumnIndex).makeCopy();
+      Vec newWeight2 = fr.vec(_weightColumnIndex).clone();
+      Vec newWeight3 = fr.vec(_weightColumnIndex).doCopy();
+      _predCol = new Frame(newWeight);
       _predCol._key = Key.make();
       DKV.put(_predCol);
     }
@@ -233,7 +236,7 @@ public class PartialDependence extends Lockable<PartialDependence> {
       meanSigErr[1] = calMeansSTD.getWeightedSigma();
       meanSigErr[2] = meanSigErr[1] / Math.sqrt(predWithWeight.numRows());
 
-      predWithWeight.remove();
+      predWithWeight.remove(); // java leaked keys.....
       return meanSigErr;
     }
 

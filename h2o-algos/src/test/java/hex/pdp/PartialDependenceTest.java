@@ -96,7 +96,6 @@ public class PartialDependenceTest extends TestUtil {
 
       // PartialDependence
       partialDependence = new PartialDependence(Key.<PartialDependence>make());
-//      partialDependence._cols = model._output._names;
       partialDependence._nbins = 10;
       partialDependence._model_id = (Key) model._key;
       partialDependence._cols = new String[]{"AGE", "RACE"};
@@ -104,7 +103,6 @@ public class PartialDependenceTest extends TestUtil {
       partialDependence.execImpl().get();
 
       partialDependenceW = new PartialDependence(Key.<PartialDependence>make());
-//      partialDependence._cols = model._output._names;
       partialDependenceW._nbins = 10;
       partialDependenceW._model_id = (Key) model._key;
       partialDependenceW._cols = new String[]{"AGE", "RACE"};
