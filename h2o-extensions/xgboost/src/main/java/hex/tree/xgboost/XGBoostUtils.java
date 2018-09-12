@@ -424,7 +424,7 @@ public class XGBoostUtils {
 
             rwRow = setResponseAndWeight(chunks, respIdx, weight, resp, weights, rwRow, i);
         }
-        assert data.nrow * data.ncol == idx;
+        assert (long) data.nrow * data.ncol == idx;
         return actualRows;
     }
 
