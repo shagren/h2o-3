@@ -5,7 +5,6 @@ import water.*;
 import water.api.schemas3.KeyV3;
 import water.fvec.Frame;
 import water.fvec.Vec;
-import water.rapids.Rapids;
 import water.util.FrameUtils.CalculateWeightMeanSTD;
 import water.util.Log;
 import water.util.TwoDimTable;
@@ -22,7 +21,6 @@ public class PartialDependence extends Lockable<PartialDependence> {
   public boolean _addMissingNA = false; // set to be false for default
   public int _nbins = 20;
   public TwoDimTable[] _partial_dependence_data; //OUTPUT
-  public Frame _predCol;
 
   public PartialDependence(Key<PartialDependence> dest, Job j) {
     super(dest);
@@ -71,8 +69,6 @@ public class PartialDependence extends Lockable<PartialDependence> {
           Log.info("Selecting the top " + _cols.length + " features from the model's variable importances");
         }
       }
-
-
     }
     if (_nbins < 2) {
       throw new IllegalArgumentException("_nbins must be >=2.");
@@ -82,12 +78,6 @@ public class PartialDependence extends Lockable<PartialDependence> {
     if (_weightColumnIndex >= 0) { // grab and make weight column as a separate frame
       if (!fr.vec(_weightColumnIndex).isNumeric() || fr.vec(_weightColumnIndex).isCategorical())
         throw new IllegalArgumentException("Weight column " + _weightColumnIndex + " must be a numerical column.");
-      Vec newWeight = fr.vec(_weightColumnIndex).makeCopy();
-      Vec newWeight2 = fr.vec(_weightColumnIndex).clone();
-      Vec newWeight3 = fr.vec(_weightColumnIndex).doCopy();
-      _predCol = new Frame(newWeight);
-      _predCol._key = Key.make();
-      DKV.put(_predCol);
     }
 
     for (int i = 0; i < _cols.length; ++i) {
@@ -160,8 +150,7 @@ public class PartialDependence extends Lockable<PartialDependence> {
                 } else {
                   if (_model_id.get()._output.nclasses() == 2) {
                     if (_weightColumnIndex >= 0) { // calculated weighted statistics
-                      String cbindStr = "(cbind " + _predCol._key.toString() + " "+preds._key.toString() + ")";
-                      double[] meanStdErr = getWeightedStat(cbindStr, 3);
+                      double[] meanStdErr = getWeightedStat(fr, preds,  2);
                       meanResponse[which] = meanStdErr[0];
                       stddevResponse[which] = meanStdErr[1];
                       stdErrorOfTheMeanResponse[which] = meanStdErr[2];
@@ -172,8 +161,7 @@ public class PartialDependence extends Lockable<PartialDependence> {
                     }
                   } else if (_model_id.get()._output.nclasses() == 1) {
                     if (_weightColumnIndex >= 0) {
-                      String cbindStr = "(cbind " + _predCol._key.toString() + " "+preds._key.toString() + ")";
-                      double[] meanStdErr = getWeightedStat(cbindStr, 1);
+                      double[] meanStdErr = getWeightedStat(fr, preds, 0);
                       meanResponse[which] = meanStdErr[0];
                       stddevResponse[which] = meanStdErr[1];
                       stdErrorOfTheMeanResponse[which] = meanStdErr[2];
@@ -219,24 +207,18 @@ public class PartialDependence extends Lockable<PartialDependence> {
         if (_job.stop_requested())
           break;
       }
-      if (_predCol != null) {
-        DKV.remove(_predCol._key);
-        _predCol.remove();
-      }
       tryComplete();
     }
 
-    public double[] getWeightedStat(String rapidsExpression, int targetIndex) {
+    public double[] getWeightedStat(Frame dataFrame, Frame pred, int targetIndex) {
       double[] meanSigErr = new double[]{0,0,0};
-      Frame predWithWeight = Rapids.exec(rapidsExpression).getFrame();
-      CalculateWeightMeanSTD calMeansSTD = new CalculateWeightMeanSTD(predWithWeight, targetIndex, 0);
-      calMeansSTD.doAll(predWithWeight);
+      CalculateWeightMeanSTD calMeansSTD = new CalculateWeightMeanSTD(dataFrame, pred);
+      calMeansSTD.doAll(pred.vec(targetIndex), dataFrame.vec(_weightColumnIndex));
 
       meanSigErr[0] = calMeansSTD.getWeightedMean();
       meanSigErr[1] = calMeansSTD.getWeightedSigma();
-      meanSigErr[2] = meanSigErr[1] / Math.sqrt(predWithWeight.numRows());
+      meanSigErr[2] = meanSigErr[1] / Math.sqrt(pred.numRows());
 
-      predWithWeight.remove(); // java leaked keys.....
       return meanSigErr;
     }
 

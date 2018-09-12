@@ -184,23 +184,20 @@ public class FrameUtilsTest extends TestUtil {
       Scope.track(weights[0]);
       Scope.track(weights[1]);
 
-      Frame test = new Frame(trainData);
-      test.add(new String[]{"constantWeights", "incWeights"}, weights);
+      Frame test = new Frame(new String[]{"weight0", "weight1"},weights);
+      test._key = Key.make();
       Scope.track(test);
-
-      FrameUtils.CalculateWeightMeanSTD calMeansSTDW1 = new FrameUtils.CalculateWeightMeanSTD(test, 0,
-              test.numCols() - 2);
-      calMeansSTDW1.doAll(test); // calculate statistic with constant weight
+      FrameUtils.CalculateWeightMeanSTD calMeansSTDW1 = new FrameUtils.CalculateWeightMeanSTD(trainData, test);
+      calMeansSTDW1.doAll(trainData.vec(0), test.vec(0)); // calculate statistic with constant weight
       // compare with results with no weights, should be the same
-      assert Math.abs(test.vec(0).mean()-calMeansSTDW1.getWeightedMean())<1e-10:"Error, weighted mean "+
-              calMeansSTDW1.getWeightedMean()+ " and expected mean "+test.vec(0).mean()+" should equal but not.";
-      assert Math.abs(test.vec(0).sigma()-calMeansSTDW1.getWeightedSigma())<1e-10:"Error, weighted sigma "+
-              calMeansSTDW1.getWeightedSigma()+ " and expected sigma "+test.vec(0).sigma()+" should equal but not.";
+      assert Math.abs(trainData.vec(0).mean()-calMeansSTDW1.getWeightedMean())<1e-10:"Error, weighted mean "+
+              calMeansSTDW1.getWeightedMean()+ " and expected mean "+trainData.vec(0).mean()+" should equal but not.";
+      assert Math.abs(trainData.vec(0).sigma()-calMeansSTDW1.getWeightedSigma())<1e-10:"Error, weighted sigma "+
+              calMeansSTDW1.getWeightedSigma()+ " and expected sigma "+trainData.vec(0).sigma()+" should equal but not.";
 
-      FrameUtils.CalculateWeightMeanSTD calMeansSTDW2 = new FrameUtils.CalculateWeightMeanSTD(test, 0,
-              test.numCols() - 1);
-      calMeansSTDW2.doAll(test); // calculate statistic with increasing weight
-      double[] meanSigma = calWeightedMeanSigma(test, 0, test.numCols()-1);
+      FrameUtils.CalculateWeightMeanSTD calMeansSTDW2 = new FrameUtils.CalculateWeightMeanSTD(trainData, test);
+      calMeansSTDW2.doAll(trainData.vec(0), test.vec(1)); // calculate statistic with increasing weight
+      double[] meanSigma = calWeightedMeanSigma(trainData, test,0, 1);
       assert Math.abs(meanSigma[0]-calMeansSTDW2.getWeightedMean())<1e-10:"Error, weighted mean "+
               calMeansSTDW1.getWeightedMean()+ " and expected mean "+meanSigma[0]+" should equal but not.";
       assert Math.abs(meanSigma[1]-calMeansSTDW2.getWeightedSigma())<1e-10:"Error, weighted sigma "+
@@ -214,7 +211,7 @@ public class FrameUtilsTest extends TestUtil {
   /*
   calculate weighted mean and sigma from theory.
    */
-  public double[] calWeightedMeanSigma(Frame dataFrame, int targetIndex, int WeightIndex) {
+  public double[] calWeightedMeanSigma(Frame dataFrame,Frame weightF, int targetIndex, int WeightIndex) {
     double[] meanSigma = new double[2];
     int zeroWeightCount = 0;
     double weightSum = 0.0;
@@ -222,7 +219,7 @@ public class FrameUtilsTest extends TestUtil {
     double weightedEleSqSum = 0.0;
 
     for (int rindex=0; rindex < dataFrame.numRows(); rindex++) {
-      double tempWeight = dataFrame.vec(WeightIndex).at(rindex);
+      double tempWeight = weightF.vec(WeightIndex).at(rindex);
       if (Math.abs(tempWeight) > 0) {
         double tempVal = dataFrame.vec(targetIndex).at(rindex);
         double weightedtempVal = tempVal*tempWeight;

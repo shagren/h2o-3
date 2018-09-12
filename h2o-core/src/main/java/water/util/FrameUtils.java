@@ -967,32 +967,29 @@ public class FrameUtils {
     public double _weightedMean;
     public double _weightedSigma;
     public long _nonZeroWeightsNum;
-    public int _targetColumnIndex;
-    public int _weightColumnIndex;
     public Frame _dataFrame;
+    public Frame _pred;
 
-    public CalculateWeightMeanSTD(Frame dataFrame, int targetIndex, int weightIndex) {
+    public CalculateWeightMeanSTD(Frame dataFrame, Frame pred) {
       _dataFrame = dataFrame;
-      assert targetIndex < dataFrame.numCols():"Target column index exceeds actual data frame columns.";
-      assert weightIndex < dataFrame.numCols():"Weight column index exceeds actual data frame columns.";
-      _targetColumnIndex = targetIndex;
-      _weightColumnIndex = weightIndex;
+      _pred = pred;
     }
 
-    public void map(Chunk[] cs) {
+    public void map(Chunk pcs, Chunk wcs) {
       _weightedEleSum = 0;
       _weightedEleSqSum = 0;
       _weightedCount = 0;
       _nonZeroWeightsNum = 0;
+      assert pcs._len==wcs._len:"Prediction and weight chunk should have the same length.";
       // 0 contains prediction, 1 columns weight
-      for (int rindex = 0; rindex < cs[0]._len; rindex++) {
-        double weight = cs[_weightColumnIndex].atd(rindex);
+      for (int rindex = 0; rindex < pcs._len; rindex++) {
+        double weight = wcs.atd(rindex);
         if (Math.abs(weight) > 0) {
-          double v1 = cs[_targetColumnIndex].atd(rindex) * cs[_weightColumnIndex].atd(rindex);
+          double v1 = pcs.atd(rindex) * wcs.atd(rindex);
           _weightedEleSum += v1;
-          _weightedEleSqSum += v1 * cs[_targetColumnIndex].atd(rindex);
+          _weightedEleSqSum += v1 * pcs.atd(rindex);
 
-          _weightedCount += cs[_weightColumnIndex].atd(rindex);
+          _weightedCount += wcs.atd(rindex);
           _nonZeroWeightsNum++;
         }
       }
@@ -1007,7 +1004,8 @@ public class FrameUtils {
     public void postGlobal() {
       _weightedMean = _weightedCount==0?Double.NaN:_weightedEleSum/_weightedCount;  // return NaN for bad input
       long scale = _nonZeroWeightsNum-1;
-      _weightedSigma = scale==0?Double.NaN:
+      scale = scale==0?1:scale; // avoid division by zero
+      _weightedSigma = _weightedCount==0?Double.NaN:
               Math.sqrt((_weightedEleSqSum/_weightedCount-_weightedMean*_weightedMean)*_nonZeroWeightsNum/scale);  // return NaN for bad input
     }
 
